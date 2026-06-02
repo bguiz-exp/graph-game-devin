@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import type {
+  Coordinate,
   GameState,
   GraphConfig,
   Question,
@@ -10,6 +11,7 @@ import { createRng } from "../utils/rng";
 import { generateQuestion } from "../utils/generateQuestion";
 import { mathToCanvas } from "../utils/mathToCanvas";
 import { computeGraphConfig } from "../utils/graphConfig";
+import { evaluateEquation, coefficientNames } from "../utils/evaluateEquation";
 import { EquationPanel } from "../components/EquationPanel";
 import { GRAPH_RECT, COLORS } from "../config";
 
@@ -18,6 +20,9 @@ export class GameScene extends Phaser.Scene {
   private currentTemplate!: QuestionTemplate;
   private balloonSprites: Map<string, Phaser.GameObjects.Arc> = new Map();
   private equationPanel!: EquationPanel;
+  private curveGraphics?: Phaser.GameObjects.Graphics;
+  private lastCurvePoints: Coordinate[] = [];
+  private lastError: string | null = null;
 
   constructor() {
     super("GameScene");
@@ -26,6 +31,12 @@ export class GameScene extends Phaser.Scene {
   create(): void {
     this.equationPanel = new EquationPanel(this, GRAPH_RECT.right + 30, 120);
     this.loadQuestion();
+
+    const question = this.registry.get("currentQuestion") as Question;
+    const names = coefficientNames(question.equationType);
+    this.equationPanel.createInputs(names, () =>
+      this.proxySubmitEquation(this.equationPanel.readCoefficients(names)),
+    );
   }
 
   /** N10 — select + generate the current question and render the scene. */
@@ -147,10 +158,80 @@ export class GameScene extends Phaser.Scene {
     return this.balloonSprites;
   }
 
-  // ---- Stub proxies filled in later slices ----
+  /**
+   * N20 — validate the submitted coefficients and plot the curve (U11).
+   * `checkIntersections` (V3) and `animateFlight` (V5) are invoked here later.
+   */
+  proxySubmitEquation(coefficients: Record<string, number>): void {
+    const question = this.registry.get("currentQuestion") as Question;
+    const names = coefficientNames(question.equationType);
 
-  proxySubmitEquation(_coefficients: Record<string, number>): void {
-    // V2
+    const complete = names.every((n) => Number.isFinite(coefficients[n]));
+    if (!complete) {
+      this.lastError = "Enter a number for every coefficient.";
+      this.equationPanel.showError(this.lastError);
+      return;
+    }
+
+    this.lastError = null;
+    this.equationPanel.clearError();
+    this.plotCurve(coefficients, question.equationType);
+  }
+
+  /** N32 — sample the equation across the visible range and draw it dashed. */
+  plotCurve(
+    coefficients: Record<string, number>,
+    equationType: Question["equationType"],
+  ): void {
+    if (!this.curveGraphics) {
+      this.curveGraphics = this.add.graphics();
+    }
+    this.curveGraphics.clear();
+    this.curveGraphics.lineStyle(3, COLORS.curve, 1);
+
+    const { graphX, graphY } = this.currentTemplate.ranges;
+    const runs: Coordinate[][] = [];
+    let run: Coordinate[] = [];
+    const step = 0.05;
+    for (let x = graphX.min; x <= graphX.max + 1e-9; x += step) {
+      const y = evaluateEquation(coefficients, x, equationType);
+      // Skip points outside the visible vertical range (avoids off-canvas spikes).
+      if (!Number.isFinite(y) || y < graphY.min || y > graphY.max) {
+        if (run.length > 0) {
+          runs.push(run);
+          run = [];
+        }
+        continue;
+      }
+      run.push(mathToCanvas(x, y, this.graphConfig));
+    }
+    if (run.length > 0) runs.push(run);
+
+    this.lastCurvePoints = runs.flat();
+    for (const points of runs) {
+      this.drawDashedPath(this.curveGraphics, points);
+    }
+  }
+
+  private drawDashedPath(
+    g: Phaser.GameObjects.Graphics,
+    points: Coordinate[],
+  ): void {
+    // Dense samples (0.05 units) — render ~3 drawn segments then ~3 gaps.
+    for (let i = 1; i < points.length; i++) {
+      if (i % 6 < 3) continue;
+      g.lineBetween(points[i - 1].x, points[i - 1].y, points[i].x, points[i].y);
+    }
+  }
+
+  /** Points of the most recently plotted curve (test/automation hook). */
+  getCurvePoints(): Coordinate[] {
+    return this.lastCurvePoints;
+  }
+
+  /** Last validation error message, or null (test/automation hook). */
+  getError(): string | null {
+    return this.lastError;
   }
 
   proxyNextQuestion(): void {

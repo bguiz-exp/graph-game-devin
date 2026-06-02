@@ -17,6 +17,8 @@ export const COLORS = {
   minorGrid: 0xd6deeb,
   majorAxis: 0x4a5568,
   balloon: 0xff5470,
+  curve: 0x3b82f6,
   text: "#e6e9f0",
   darkText: "#2d3748",
+  errorText: "#ff6b6b",
 };
