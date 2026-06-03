@@ -1,0 +1,28 @@
+{
+  "name": "graph-game-devin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Educational maths game: fly an aeroplane along the graph of an equation through balloon targets.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration"
+  },
+  "dependencies": {
+    "phaser": "^3.80.1"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "jsdom": "^24.0.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.10",
+    "vitest": "^1.6.0",
+    "vitest-canvas-mock": "^0.3.3"
+  }
+}
