@@ -1,6 +1,8 @@
 import Phaser from "phaser";
 import type {
+  BalloonTarget,
   Coordinate,
+  EquationType,
   GameState,
   GraphConfig,
   Question,
@@ -12,8 +14,13 @@ import { generateQuestion } from "../utils/generateQuestion";
 import { mathToCanvas } from "../utils/mathToCanvas";
 import { computeGraphConfig } from "../utils/graphConfig";
 import { evaluateEquation, coefficientNames } from "../utils/evaluateEquation";
+import {
+  checkIntersections,
+  type IntersectionResult,
+} from "../utils/checkIntersections";
 import { EquationPanel } from "../components/EquationPanel";
 import { GRAPH_RECT, COLORS } from "../config";
+import { PLANE_TEXTURE, PARTICLE_TEXTURE } from "../assets/sprites";
 
 export class GameScene extends Phaser.Scene {
   private graphConfig!: GraphConfig;
@@ -23,9 +30,21 @@ export class GameScene extends Phaser.Scene {
   private curveGraphics?: Phaser.GameObjects.Graphics;
   private lastCurvePoints: Coordinate[] = [];
   private lastError: string | null = null;
+  private planeSprite?: Phaser.GameObjects.Sprite;
+  private flightTween?: Phaser.Tweens.Tween;
+  private flying = false;
+  private lastHitMiss: IntersectionResult[] = [];
 
   constructor() {
     super("GameScene");
+  }
+
+  /** Prep — load the aeroplane (U12) and pop-particle (U14) textures. */
+  preload(): void {
+    if (!this.textures.exists("plane")) this.load.image("plane", PLANE_TEXTURE);
+    if (!this.textures.exists("balloon-pop")) {
+      this.load.image("balloon-pop", PARTICLE_TEXTURE);
+    }
   }
 
   create(): void {
@@ -85,7 +104,45 @@ export class GameScene extends Phaser.Scene {
 
     this.drawGraphPaper();
     this.placeBalloons(question);
+    this.placePlane(question);
     this.equationPanel.render(question.templateLabel);
+  }
+
+  /** U12 — add the aeroplane on the curve at the start x, hidden until flight. */
+  placePlane(question: Question): void {
+    const startX = this.currentTemplate.start.x;
+    const startY = evaluateEquation(
+      question.correctCoefficients,
+      startX,
+      question.equationType,
+    );
+    const p = mathToCanvas(startX, startY, this.graphConfig);
+    if (!this.planeSprite) {
+      this.planeSprite = this.add
+        .sprite(p.x, p.y, "plane")
+        .setOrigin(0.5, 0.5)
+        .setDepth(20);
+    } else {
+      this.planeSprite.setPosition(p.x, p.y).setRotation(0);
+    }
+    this.planeSprite.setVisible(false);
+  }
+
+  getPlaneSprite(): Phaser.GameObjects.Sprite | undefined {
+    return this.planeSprite;
+  }
+
+  isFlying(): boolean {
+    return this.flying;
+  }
+
+  /** Whether the Submit control is currently enabled (test/automation hook). */
+  isSubmitEnabled(): boolean {
+    return this.equationPanel.isSubmitEnabled();
+  }
+
+  getHitMissResults(): IntersectionResult[] {
+    return this.lastHitMiss;
   }
 
   /** N11 — render graph paper (U10). */
@@ -176,6 +233,183 @@ export class GameScene extends Phaser.Scene {
     this.lastError = null;
     this.equationPanel.clearError();
     this.plotCurve(coefficients, question.equationType);
+
+    // V3 — classify each balloon, then fly the plane along the plotted curve.
+    const results = checkIntersections(
+      coefficients,
+      question.equationType,
+      question.targets,
+    );
+    this.lastHitMiss = results;
+    this.animateFlight(results, coefficients, question.equationType);
+  }
+
+  /**
+   * N40 — tween the plane along the plotted curve, rotating it to face the
+   * direction of travel, firing onHit/onMiss as it passes each balloon.
+   */
+  animateFlight(
+    hitMissResults: IntersectionResult[],
+    coefficients: Record<string, number>,
+    equationType: EquationType,
+  ): void {
+    if (!this.planeSprite) return;
+    this.flightTween?.remove();
+
+    const { graphX, graphY } = this.currentTemplate.ranges;
+    // Sample the curve into canvas waypoints (clamped to the visible range).
+    const step = 0.1;
+    const waypoints: Coordinate[] = [];
+    for (let x = graphX.min; x <= graphX.max + 1e-9; x += step) {
+      let y = evaluateEquation(coefficients, x, equationType);
+      y = Phaser.Math.Clamp(y, graphY.min, graphY.max);
+      waypoints.push(mathToCanvas(x, y, this.graphConfig));
+    }
+    if (waypoints.length < 2) {
+      this.onFlightComplete();
+      return;
+    }
+
+    // Pre-compute each balloon's canvas x + result so we can fire callbacks as
+    // the plane passes (left-to-right, so canvas x increases monotonically).
+    const resultById = new Map(hitMissResults.map((r) => [r.id, r.result]));
+    const question = this.registry.get("currentQuestion") as Question;
+    const pending = question.targets
+      .map((target) => ({
+        target,
+        canvasX: mathToCanvas(target.x, target.y, this.graphConfig).x,
+        result: resultById.get(target.id) ?? "miss",
+        fired: false,
+      }))
+      .sort((a, b) => a.canvasX - b.canvasX);
+
+    const firePending = (px: number): void => {
+      for (const pt of pending) {
+        if (!pt.fired && px >= pt.canvasX) {
+          pt.fired = true;
+          if (pt.result === "hit") this.proxyOnHit(pt.target);
+          else this.proxyOnMiss(pt.target);
+        }
+      }
+    };
+
+    this.flying = true;
+    this.equationPanel.setSubmitEnabled(false);
+    this.planeSprite.setVisible(true).setPosition(waypoints[0].x, waypoints[0].y);
+
+    const segments = waypoints.length - 1;
+    // Duration proportional to curve length, clamped so it always feels snappy.
+    const duration = Phaser.Math.Clamp(segments * 30, 1000, 3000);
+
+    this.flightTween = this.tweens.addCounter({
+      from: 0,
+      to: segments,
+      duration,
+      ease: "Linear",
+      onUpdate: (tween) => {
+        const v = tween.getValue() ?? segments;
+        const i = Math.min(Math.floor(v), segments - 1);
+        const frac = v - i;
+        const a = waypoints[i];
+        const b = waypoints[i + 1];
+        const px = Phaser.Math.Linear(a.x, b.x, frac);
+        const py = Phaser.Math.Linear(a.y, b.y, frac);
+        this.planeSprite!.setPosition(px, py);
+        // Rotation follows the curve's slope (direction of travel).
+        this.planeSprite!.setRotation(Math.atan2(b.y - a.y, b.x - a.x));
+        firePending(px);
+      },
+      onComplete: () => {
+        firePending(Number.POSITIVE_INFINITY); // any balloons past the last sample
+        this.onFlightComplete();
+      },
+    });
+  }
+
+  private onFlightComplete(): void {
+    this.flying = false;
+    this.equationPanel.setSubmitEnabled(true);
+    this.checkSolved();
+  }
+
+  /** N60 — stub in V3; wired to scoring/level progression in V4. */
+  checkSolved(): void {
+    // Intentionally empty until V4.
+  }
+
+  /**
+   * N41 — handle the plane reaching a balloon it hits: pop particles (U14),
+   * float "+10" upward (U16), and record the hit in S4.
+   */
+  proxyOnHit(balloon: BalloonTarget): void {
+    const p = mathToCanvas(balloon.x, balloon.y, this.graphConfig);
+    if (this.textures.exists("balloon-pop")) {
+      const emitter = this.add.particles(p.x, p.y, "balloon-pop", {
+        speed: { min: 60, max: 180 },
+        angle: { min: 0, max: 360 },
+        lifespan: 600,
+        scale: { start: 0.9, end: 0 },
+        emitting: false,
+      });
+      emitter.setDepth(15);
+      emitter.explode(20, p.x, p.y);
+      this.time.delayedCall(700, () => emitter.destroy());
+    }
+    const sprite = this.balloonSprites.get(balloon.id);
+    if (sprite) {
+      sprite.setVisible(false);
+      this.time.delayedCall(50, () => sprite.destroy());
+    }
+    this.floatPoints(p.x, p.y, "+10", COLORS.pointsHit, -60);
+    this.markBalloonState(balloon.id, "hit");
+  }
+
+  /**
+   * N42 — handle the plane passing a balloon it misses: the balloon falls and
+   * fades (U15), "−5" floats downward (U16), and the miss is recorded in S4.
+   */
+  proxyOnMiss(balloon: BalloonTarget): void {
+    const p = mathToCanvas(balloon.x, balloon.y, this.graphConfig);
+    const sprite = this.balloonSprites.get(balloon.id);
+    if (sprite) {
+      this.tweens.add({
+        targets: sprite,
+        y: sprite.y + 300,
+        alpha: 0,
+        duration: 800,
+        ease: "Quad.easeIn",
+        onComplete: () => sprite.destroy(),
+      });
+    }
+    this.floatPoints(p.x, p.y, "\u22125", COLORS.pointsMiss, 60);
+    this.markBalloonState(balloon.id, "miss");
+  }
+
+  /** U16 — a points label that drifts (dy) while fading, then is removed. */
+  private floatPoints(
+    x: number,
+    y: number,
+    label: string,
+    color: string,
+    dy: number,
+  ): void {
+    const text = this.add
+      .text(x, y, label, { fontSize: "20px", color, fontStyle: "bold" })
+      .setOrigin(0.5)
+      .setDepth(25);
+    this.tweens.add({
+      targets: text,
+      y: y + dy,
+      alpha: 0,
+      duration: 800,
+      ease: "Quad.easeOut",
+      onComplete: () => text.destroy(),
+    });
+  }
+
+  private markBalloonState(id: string, state: "hit" | "miss"): void {
+    const gameState = this.registry.get("gameState") as GameState | undefined;
+    if (gameState) gameState.balloonStates[id] = state;
   }
 
   /** N32 — sample the equation across the visible range and draw it dashed. */
