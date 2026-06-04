@@ -2,16 +2,17 @@ import Phaser from "phaser";
 import { COLORS } from "../config";
 
 /**
- * U20/U21/U23 — shows the equation template, a coefficient input per blank, and
- * a Submit button. DOM inputs (U21) are only created when a DOM container is
- * available (real browser); headless tests drive `proxySubmitEquation` directly.
+ * U20/U21/U23 — shows the equation with a coefficient input overlaid inline at
+ * each blank, plus a Submit button. The DOM inputs (U21) are only created when a
+ * DOM container is available (real browser); headless tests drive
+ * `proxySubmitEquation` directly.
  */
 export class EquationPanel {
   private scene: Phaser.Scene;
   private x: number;
   private y: number;
 
-  private labelText?: Phaser.GameObjects.Text;
+  private equationLabel = "";
   private errorText?: Phaser.GameObjects.Text;
   private inputs: Record<string, HTMLInputElement> = {};
   private onSubmit?: () => void;
@@ -23,26 +24,32 @@ export class EquationPanel {
   }
 
   render(templateLabel: string): void {
+    // Keep the blanked label (e.g. "y = _x + _"); inputs are overlaid inline
+    // at each blank in createInputs().
+    this.equationLabel = templateLabel;
     this.scene.add.text(this.x, this.y - 30, "Equation", {
       fontSize: "18px",
       color: COLORS.text,
       fontStyle: "bold",
     });
-    this.labelText = this.scene.add.text(this.x, this.y, templateLabel, {
-      fontSize: "24px",
-      color: COLORS.text,
-      backgroundColor: "#2a2d3a",
-      padding: { x: 10, y: 8 },
-    });
   }
 
-  setLabel(label: string): void {
-    this.labelText?.setText(label);
-  }
-
-  /** U21 + U23 — build a numeric input per coefficient and a Submit button. */
+  /** U21 + U23 — overlay an input at each blank inline, plus a Submit button. */
   createInputs(coeffNames: string[], onSubmit: () => void): void {
     this.onSubmit = onSubmit;
+
+    const game = this.scene.game as Phaser.Game & { domContainer?: HTMLElement };
+    if (game.domContainer) {
+      this.renderInlineInputs(coeffNames);
+    } else {
+      // Headless fallback: a static label so the scene still has the equation.
+      this.scene.add.text(this.x, this.y, this.equationLabel, {
+        fontSize: "24px",
+        color: COLORS.text,
+        backgroundColor: "#2a2d3a",
+        padding: { x: 10, y: 8 },
+      });
+    }
 
     // U23 — Phaser Submit button (also works in headless tests).
     this.scene.add
@@ -54,24 +61,41 @@ export class EquationPanel {
       })
       .setInteractive({ useHandCursor: true })
       .on("pointerdown", () => this.onSubmit?.());
+  }
 
-    // U21 — DOM number inputs (browser only).
-    const game = this.scene.game as Phaser.Game & { domContainer?: HTMLElement };
-    if (!game.domContainer) return;
+  /**
+   * Build a single inline DOM equation: the blanked label is split on each
+   * blank (`_`) and an `<input>` is woven in at each gap, in coefficient order,
+   * so the user sees e.g. `y = [ ]x + [ ]`.
+   */
+  private renderInlineInputs(coeffNames: string[]): void {
+    const segments = this.equationLabel.split("_");
+    const esc = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const inputStyle =
+      "width:52px;font:22px monospace;text-align:center;padding:2px 4px;" +
+      "margin:0 2px;color:#e6e9f0;background:#1b1e2b;" +
+      "border:1px solid #3b82f6;border-radius:4px;";
 
-    const fields = coeffNames
-      .map(
-        (n) =>
-          `<label style="color:#e6e9f0;font:16px monospace;display:flex;` +
-          `align-items:center;gap:6px;margin:4px 0;">${n}` +
-          `<input type="number" step="1" data-coeff="${n}" ` +
-          `style="width:64px;font:16px monospace;padding:4px;" /></label>`,
-      )
-      .join("");
-    const html =
-      `<div style="display:flex;flex-direction:column;">${fields}</div>`;
+    let html = "";
+    segments.forEach((seg, i) => {
+      if (seg) html += `<span>${esc(seg)}</span>`;
+      const name = coeffNames[i];
+      // A blank lives between every pair of segments; weave an input there.
+      if (i < segments.length - 1 && name) {
+        html += `<input type="number" step="1" data-coeff="${name}" style="${inputStyle}" />`;
+      }
+    });
 
-    const dom = this.scene.add.dom(this.x + 70, this.y + 60).createFromHTML(html);
+    const wrapper =
+      `<div style="display:flex;align-items:center;font:24px monospace;` +
+      `color:${COLORS.text};background:#2a2d3a;padding:8px 10px;` +
+      `border-radius:6px;white-space:nowrap;">${html}</div>`;
+
+    const dom = this.scene.add
+      .dom(this.x, this.y)
+      .createFromHTML(wrapper)
+      .setOrigin(0, 0);
     const node = dom.node as HTMLElement;
     this.inputs = {};
     for (const n of coeffNames) {
