@@ -29,7 +29,7 @@ export class GameScene extends Phaser.Scene {
   }
 
   create(): void {
-    this.equationPanel = new EquationPanel(this, GRAPH_RECT.right + 30, 120);
+    this.equationPanel = new EquationPanel(this, GRAPH_RECT.right + 20, 120);
     this.loadQuestion();
 
     const question = this.registry.get("currentQuestion") as Question;

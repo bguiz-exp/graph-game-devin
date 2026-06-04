@@ -73,7 +73,7 @@ export class EquationPanel {
     const esc = (s: string) =>
       s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     const inputStyle =
-      "width:52px;font:22px monospace;text-align:center;padding:2px 4px;" +
+      "width:42px;font:20px monospace;text-align:center;padding:2px 3px;" +
       "margin:0 2px;color:#e6e9f0;background:#1b1e2b;" +
       "border:1px solid #3b82f6;border-radius:4px;";
 
@@ -88,8 +88,8 @@ export class EquationPanel {
     });
 
     const wrapper =
-      `<div style="display:flex;align-items:center;font:24px monospace;` +
-      `color:${COLORS.text};background:#2a2d3a;padding:8px 10px;` +
+      `<div style="display:flex;align-items:center;font:20px monospace;` +
+      `color:${COLORS.text};background:#2a2d3a;padding:6px 8px;` +
       `border-radius:6px;white-space:nowrap;">${html}</div>`;
 
     const dom = this.scene.add
