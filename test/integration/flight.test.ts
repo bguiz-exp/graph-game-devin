@@ -30,7 +30,7 @@ describe("aeroplane flight + hit/miss (V3)", () => {
     const q = question(scene);
 
     scene.proxySubmitEquation(q.correctCoefficients);
-    await waitFor(() => !scene.isFlying(), 8000);
+    await waitFor(() => !scene.isFlying(), 12000);
 
     const states = (g.registry.get("gameState") as { balloonStates: Record<string, string> })
       .balloonStates;
@@ -38,7 +38,7 @@ describe("aeroplane flight + hit/miss (V3)", () => {
     for (const target of q.targets) {
       expect(states[target.id]).toBe("hit");
     }
-  });
+  }, 15000);
 
   it("sets at least one balloonState to 'miss' for wrong coefficients after the flight", async () => {
     const { game: g, scene } = await startGameScene(12345);
@@ -46,13 +46,13 @@ describe("aeroplane flight + hit/miss (V3)", () => {
     const q = question(scene);
 
     scene.proxySubmitEquation(wrongCoefficients(q.correctCoefficients));
-    await waitFor(() => !scene.isFlying(), 8000);
+    await waitFor(() => !scene.isFlying(), 12000);
 
     const states = (g.registry.get("gameState") as { balloonStates: Record<string, string> })
       .balloonStates;
     const misses = q.targets.filter((t) => states[t.id] === "miss");
     expect(misses.length).toBeGreaterThan(0);
-  });
+  }, 15000);
 
   it("calls proxyOnHit exactly once per hit balloon", async () => {
     const { game: g, scene } = await startGameScene(12345);
@@ -67,11 +67,11 @@ describe("aeroplane flight + hit/miss (V3)", () => {
     };
 
     scene.proxySubmitEquation(q.correctCoefficients);
-    await waitFor(() => !scene.isFlying(), 8000);
+    await waitFor(() => !scene.isFlying(), 12000);
 
     expect(calls.sort()).toEqual(q.targets.map((t) => t.id).sort());
     expect(new Set(calls).size).toBe(calls.length); // each exactly once
-  });
+  }, 15000);
 
   it("calls proxyOnMiss exactly once per miss balloon", async () => {
     const { game: g, scene } = await startGameScene(12345);
@@ -86,22 +86,28 @@ describe("aeroplane flight + hit/miss (V3)", () => {
     };
 
     scene.proxySubmitEquation(wrongCoefficients(q.correctCoefficients));
-    await waitFor(() => !scene.isFlying(), 8000);
+    await waitFor(() => !scene.isFlying(), 12000);
 
     expect(calls.sort()).toEqual(q.targets.map((t) => t.id).sort());
     expect(new Set(calls).size).toBe(calls.length);
-  });
+  }, 15000);
 
-  it("hides the balloon sprite after proxyOnHit", async () => {
+  it("shrinks the balloon to half then drops it off-screen after proxyOnHit", async () => {
     const { game: g, scene } = await startGameScene(12345);
     game = g;
     const target = question(scene).targets[0];
     const sprite = scene.getBalloonSprites().get(target.id)!;
-    expect(sprite.visible).toBe(true);
+    const startY = sprite.y;
+    expect(sprite.scaleX).toBe(1);
 
     scene.proxyOnHit(target);
-    expect(sprite.visible).toBe(false);
-  });
+    // First it pops (shrinks to half size)...
+    await waitFor(() => sprite.scaleX <= 0.5 + 1e-3, 4000);
+    expect(sprite.scaleX).toBeLessThanOrEqual(0.5 + 1e-3);
+    // ...then it falls below its start position (off the bottom of the screen).
+    await waitFor(() => sprite.y > startY + 1, 4000);
+    expect(sprite.y).toBeGreaterThan(startY);
+  }, 15000);
 
   it("animates the balloon off-screen (y increasing) after proxyOnMiss", async () => {
     const { game: g, scene } = await startGameScene(12345);
@@ -127,7 +133,7 @@ describe("aeroplane flight + hit/miss (V3)", () => {
     expect(scene.isFlying()).toBe(true);
     expect(scene.isSubmitEnabled()).toBe(false);
 
-    await waitFor(() => !scene.isFlying(), 8000);
+    await waitFor(() => !scene.isFlying(), 12000);
     expect(scene.isSubmitEnabled()).toBe(true);
-  });
+  }, 15000);
 });
