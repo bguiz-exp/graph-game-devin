@@ -21,4 +21,6 @@ export const COLORS = {
   text: "#e6e9f0",
   darkText: "#2d3748",
   errorText: "#ff6b6b",
+  pointsHit: "#34d399",
+  pointsMiss: "#f87171",
 };

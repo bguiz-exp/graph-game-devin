@@ -1,6 +1,8 @@
 import Phaser from "phaser";
 import type {
+  BalloonTarget,
   Coordinate,
+  EquationType,
   GameState,
   GraphConfig,
   Question,
@@ -12,8 +14,13 @@ import { generateQuestion } from "../utils/generateQuestion";
 import { mathToCanvas } from "../utils/mathToCanvas";
 import { computeGraphConfig } from "../utils/graphConfig";
 import { evaluateEquation, coefficientNames } from "../utils/evaluateEquation";
+import {
+  checkIntersections,
+  type IntersectionResult,
+} from "../utils/checkIntersections";
 import { EquationPanel } from "../components/EquationPanel";
-import { GRAPH_RECT, COLORS } from "../config";
+import { GRAPH_RECT, GAME_HEIGHT, COLORS } from "../config";
+import { PLANE_TEXTURE, PARTICLE_TEXTURE } from "../assets/sprites";
 
 export class GameScene extends Phaser.Scene {
   private graphConfig!: GraphConfig;
@@ -23,9 +30,21 @@ export class GameScene extends Phaser.Scene {
   private curveGraphics?: Phaser.GameObjects.Graphics;
   private lastCurvePoints: Coordinate[] = [];
   private lastError: string | null = null;
+  private planeSprite?: Phaser.GameObjects.Sprite;
+  private flightTween?: Phaser.Tweens.Tween;
+  private flying = false;
+  private lastHitMiss: IntersectionResult[] = [];
 
   constructor() {
     super("GameScene");
+  }
+
+  /** Prep — load the aeroplane (U12) and pop-particle (U14) textures. */
+  preload(): void {
+    if (!this.textures.exists("plane")) this.load.image("plane", PLANE_TEXTURE);
+    if (!this.textures.exists("balloon-pop")) {
+      this.load.image("balloon-pop", PARTICLE_TEXTURE);
+    }
   }
 
   create(): void {
@@ -85,7 +104,48 @@ export class GameScene extends Phaser.Scene {
 
     this.drawGraphPaper();
     this.placeBalloons(question);
+    this.placePlane(question);
     this.equationPanel.render(question.templateLabel);
+  }
+
+  /** U12 — add the aeroplane at the left edge of the graph, visible from the start. */
+  placePlane(_question: Question): void {
+    const p = this.planeStartPosition();
+    if (!this.planeSprite) {
+      this.planeSprite = this.add
+        .sprite(p.x, p.y, "plane")
+        .setOrigin(0.5, 0.5)
+        .setDepth(20);
+    } else {
+      this.planeSprite.setPosition(p.x, p.y).setRotation(0).setScale(1);
+    }
+    // The plane is on screen before Submit so the player can see it waiting.
+    this.planeSprite.setVisible(true);
+  }
+
+  /** Resting spot for the plane before a flight: bottom-left of the graph. */
+  private planeStartPosition(): Coordinate {
+    return {
+      x: GRAPH_RECT.left + 16,
+      y: GRAPH_RECT.bottom - 16,
+    };
+  }
+
+  getPlaneSprite(): Phaser.GameObjects.Sprite | undefined {
+    return this.planeSprite;
+  }
+
+  isFlying(): boolean {
+    return this.flying;
+  }
+
+  /** Whether the Submit control is currently enabled (test/automation hook). */
+  isSubmitEnabled(): boolean {
+    return this.equationPanel.isSubmitEnabled();
+  }
+
+  getHitMissResults(): IntersectionResult[] {
+    return this.lastHitMiss;
   }
 
   /** N11 — render graph paper (U10). */
@@ -176,6 +236,192 @@ export class GameScene extends Phaser.Scene {
     this.lastError = null;
     this.equationPanel.clearError();
     this.plotCurve(coefficients, question.equationType);
+
+    // V3 — classify each balloon, then fly the plane along the plotted curve.
+    const results = checkIntersections(
+      coefficients,
+      question.equationType,
+      question.targets,
+    );
+    this.lastHitMiss = results;
+    this.animateFlight(results, coefficients, question.equationType);
+  }
+
+  /**
+   * N40 — tween the plane along the plotted curve, rotating it to face the
+   * direction of travel, firing onHit/onMiss as it passes each balloon.
+   */
+  animateFlight(
+    hitMissResults: IntersectionResult[],
+    coefficients: Record<string, number>,
+    equationType: EquationType,
+  ): void {
+    if (!this.planeSprite) return;
+    this.flightTween?.remove();
+
+    const { graphX, graphY } = this.currentTemplate.ranges;
+    // Sample the curve into canvas waypoints. Keep the whole plane on screen by
+    // insetting the path so the sprite never clips off the graph edges (which is
+    // what made it look like the plane "disappeared" near the top).
+    const margin = 18;
+    const step = 0.1;
+    const waypoints: Coordinate[] = [];
+    for (let x = graphX.min; x <= graphX.max + 1e-9; x += step) {
+      let y = evaluateEquation(coefficients, x, equationType);
+      y = Phaser.Math.Clamp(y, graphY.min, graphY.max);
+      const p = mathToCanvas(x, y, this.graphConfig);
+      p.x = Phaser.Math.Clamp(p.x, GRAPH_RECT.left + margin, GRAPH_RECT.right - margin);
+      p.y = Phaser.Math.Clamp(p.y, GRAPH_RECT.top + margin, GRAPH_RECT.bottom - margin);
+      waypoints.push(p);
+    }
+    if (waypoints.length < 2) {
+      this.onFlightComplete();
+      return;
+    }
+
+    // Pre-compute each balloon's canvas x + result so we can fire callbacks as
+    // the plane passes (left-to-right, so canvas x increases monotonically).
+    const resultById = new Map(hitMissResults.map((r) => [r.id, r.result]));
+    const question = this.registry.get("currentQuestion") as Question;
+    const pending = question.targets
+      .map((target) => ({
+        target,
+        canvasX: mathToCanvas(target.x, target.y, this.graphConfig).x,
+        result: resultById.get(target.id) ?? "miss",
+        fired: false,
+      }))
+      .sort((a, b) => a.canvasX - b.canvasX);
+
+    const firePending = (px: number): void => {
+      for (const pt of pending) {
+        if (!pt.fired && px >= pt.canvasX) {
+          pt.fired = true;
+          if (pt.result === "hit") this.proxyOnHit(pt.target);
+          else this.proxyOnMiss(pt.target);
+        }
+      }
+    };
+
+    this.flying = true;
+    this.equationPanel.setSubmitEnabled(false);
+    this.planeSprite.setVisible(true).setPosition(waypoints[0].x, waypoints[0].y);
+
+    const segments = waypoints.length - 1;
+    // Duration proportional to curve length. ~3x slower than before so the
+    // flight is easy to follow all the way to the end of the trajectory.
+    const duration = Phaser.Math.Clamp(segments * 90, 3000, 9000);
+
+    this.flightTween = this.tweens.addCounter({
+      from: 0,
+      to: segments,
+      duration,
+      ease: "Linear",
+      onUpdate: (tween) => {
+        const v = tween.getValue() ?? segments;
+        const i = Math.min(Math.floor(v), segments - 1);
+        const frac = v - i;
+        const a = waypoints[i];
+        const b = waypoints[i + 1];
+        const px = Phaser.Math.Linear(a.x, b.x, frac);
+        const py = Phaser.Math.Linear(a.y, b.y, frac);
+        this.planeSprite!.setPosition(px, py);
+        // Rotation follows the curve's slope (direction of travel).
+        this.planeSprite!.setRotation(Math.atan2(b.y - a.y, b.x - a.x));
+        firePending(px);
+      },
+      onComplete: () => {
+        firePending(Number.POSITIVE_INFINITY); // any balloons past the last sample
+        this.onFlightComplete();
+      },
+    });
+  }
+
+  private onFlightComplete(): void {
+    this.flying = false;
+    this.equationPanel.setSubmitEnabled(true);
+    this.checkSolved();
+  }
+
+  /** N60 — stub in V3; wired to scoring/level progression in V4. */
+  checkSolved(): void {
+    // Intentionally empty until V4.
+  }
+
+  /**
+   * N41 — handle the plane reaching a balloon it hits: shrink it to half size
+   * to simulate a pop, drop it off-screen, float "+10" upward (U16), and record
+   * the hit in S4.
+   */
+  proxyOnHit(balloon: BalloonTarget): void {
+    const p = mathToCanvas(balloon.x, balloon.y, this.graphConfig);
+    const sprite = this.balloonSprites.get(balloon.id);
+    if (sprite) {
+      // Simulate a pop by shrinking to half size, then let it fall off-screen.
+      this.tweens.add({
+        targets: sprite,
+        scaleX: 0.5,
+        scaleY: 0.5,
+        duration: 150,
+        ease: "Quad.easeOut",
+        onComplete: () => this.dropBalloon(sprite),
+      });
+    }
+    this.floatPoints(p.x, p.y, "+10", COLORS.pointsHit, -60);
+    this.markBalloonState(balloon.id, "hit");
+  }
+
+  /**
+   * N42 — handle the plane passing a balloon it misses: the balloon falls off
+   * the bottom of the screen (U15), "−5" floats downward (U16), and the miss is
+   * recorded in S4.
+   */
+  proxyOnMiss(balloon: BalloonTarget): void {
+    const p = mathToCanvas(balloon.x, balloon.y, this.graphConfig);
+    const sprite = this.balloonSprites.get(balloon.id);
+    if (sprite) this.dropBalloon(sprite);
+    this.floatPoints(p.x, p.y, "\u22125", COLORS.pointsMiss, 60);
+    this.markBalloonState(balloon.id, "miss");
+  }
+
+  /**
+   * U15 — drop a balloon with gravity-like acceleration from its current
+   * position down past the bottom of the screen, then remove it from the scene.
+   */
+  private dropBalloon(sprite: Phaser.GameObjects.Arc): void {
+    this.tweens.add({
+      targets: sprite,
+      y: GAME_HEIGHT + 60,
+      duration: 1200,
+      ease: "Quad.easeIn", // accelerating fall ≈ gravity
+      onComplete: () => sprite.destroy(),
+    });
+  }
+
+  /** U16 — a points label that drifts (dy) while fading, then is removed. */
+  private floatPoints(
+    x: number,
+    y: number,
+    label: string,
+    color: string,
+    dy: number,
+  ): void {
+    const text = this.add
+      .text(x, y, label, { fontSize: "20px", color, fontStyle: "bold" })
+      .setOrigin(0.5)
+      .setDepth(25);
+    this.tweens.add({
+      targets: text,
+      y: y + dy,
+      alpha: 0,
+      duration: 800,
+      ease: "Quad.easeOut",
+      onComplete: () => text.destroy(),
+    });
+  }
+
+  private markBalloonState(id: string, state: "hit" | "miss"): void {
+    const gameState = this.registry.get("gameState") as GameState | undefined;
+    if (gameState) gameState.balloonStates[id] = state;
   }
 
   /** N32 — sample the equation across the visible range and draw it dashed. */

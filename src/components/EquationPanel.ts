@@ -16,6 +16,8 @@ export class EquationPanel {
   private errorText?: Phaser.GameObjects.Text;
   private inputs: Record<string, HTMLInputElement> = {};
   private onSubmit?: () => void;
+  private submitButton?: Phaser.GameObjects.Text;
+  private submitEnabled = true;
 
   constructor(scene: Phaser.Scene, x: number, y: number) {
     this.scene = scene;
@@ -52,7 +54,7 @@ export class EquationPanel {
     }
 
     // U23 — Phaser Submit button (also works in headless tests).
-    this.scene.add
+    this.submitButton = this.scene.add
       .text(this.x, this.y + 130, "Submit", {
         fontSize: "22px",
         color: "#ffffff",
@@ -60,7 +62,21 @@ export class EquationPanel {
         padding: { x: 18, y: 8 },
       })
       .setInteractive({ useHandCursor: true })
-      .on("pointerdown", () => this.onSubmit?.());
+      .on("pointerdown", () => {
+        if (this.submitEnabled) this.onSubmit?.();
+      });
+  }
+
+  /** Enable/disable Submit (disabled during flight to block double-submits). */
+  setSubmitEnabled(enabled: boolean): void {
+    this.submitEnabled = enabled;
+    if (!this.submitButton) return;
+    this.submitButton.setAlpha(enabled ? 1 : 0.5);
+    this.submitButton.setBackgroundColor(enabled ? "#3b82f6" : "#6b7280");
+  }
+
+  isSubmitEnabled(): boolean {
+    return this.submitEnabled;
   }
 
   /**
@@ -105,7 +121,7 @@ export class EquationPanel {
       if (!el) continue;
       this.inputs[n] = el;
       el.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") this.onSubmit?.();
+        if (e.key === "Enter" && this.submitEnabled) this.onSubmit?.();
       });
     }
   }
