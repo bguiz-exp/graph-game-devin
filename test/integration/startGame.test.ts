@@ -1,40 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
 import Phaser from "phaser";
-import { MenuScene } from "../../src/scenes/MenuScene";
-import { GameScene } from "../../src/scenes/GameScene";
-import { ResultScene } from "../../src/scenes/ResultScene";
+import { bootGame, waitFor } from "./helpers";
+import type { MenuScene } from "../../src/scenes/MenuScene";
 import type { Question } from "../../src/types";
 
 let game: Phaser.Game | undefined;
-
-function bootGame(): Promise<Phaser.Game> {
-  return new Promise((resolve) => {
-    const g = new Phaser.Game({
-      type: Phaser.HEADLESS,
-      width: 800,
-      height: 600,
-      banner: false,
-      audio: { noAudio: true },
-      scene: [MenuScene, GameScene, ResultScene],
-      callbacks: {
-        postBoot: () => resolve(g),
-      },
-    });
-    game = g;
-  });
-}
-
-function waitFor(predicate: () => boolean, timeout = 4000): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const start = Date.now();
-    const tick = () => {
-      if (predicate()) return resolve();
-      if (Date.now() - start > timeout) return reject(new Error("waitFor timed out"));
-      setTimeout(tick, 16);
-    };
-    tick();
-  });
-}
 
 afterEach(() => {
   game?.destroy(true);
@@ -43,7 +13,8 @@ afterEach(() => {
 
 describe("game boot + start transition", () => {
   it("boots with MenuScene active and the question bank loaded", async () => {
-    const g = await bootGame();
+    game = await bootGame();
+    const g = game;
     await waitFor(() => g.scene.isActive("MenuScene"));
     expect(g.scene.isActive("MenuScene")).toBe(true);
     expect(g.registry.get("questionBank")).toBeTruthy();
@@ -51,10 +22,11 @@ describe("game boot + start transition", () => {
   });
 
   it("proxyStartGame() transitions MenuScene -> GameScene", async () => {
-    const g = await bootGame();
+    game = await bootGame();
+    const g = game;
     await waitFor(() => g.scene.isActive("MenuScene"));
 
-    g.registry.set("seed", 12345); // deterministic question
+    g.registry.set("seed", 12345);
     const menu = g.scene.getScene("MenuScene") as MenuScene;
     menu.proxyStartGame();
 
@@ -64,7 +36,8 @@ describe("game boot + start transition", () => {
   });
 
   it("writes currentQuestion to the registry after starting the game", async () => {
-    const g = await bootGame();
+    game = await bootGame();
+    const g = game;
     await waitFor(() => g.scene.isActive("MenuScene"));
 
     g.registry.set("seed", 999);
